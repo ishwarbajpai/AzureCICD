@@ -7,7 +7,7 @@ public with sharing class ContactTriggerHandler {
 //         }
 //     }
 
-//     // private static void setSalesTitle(List<Contact> contacts) {
+//    // // private static void setSalesTitle(List<Contact> contacts) {
 
 //     //     for (Contact con : contacts) {
 
