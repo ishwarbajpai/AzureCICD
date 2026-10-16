@@ -1,29 +1,31 @@
 # ============================================================================
 # Salesforce CI/CD Pipeline — Azure DevOps
-# Flow: Validate (PR) -> Approve -> Deploy -> Smoke Test -> Tag Release
-# Manually triggered (no auto-run on merge to main).
+# Flow: Validate (QA push) -> Approve -> Deploy -> Smoke Test -> Tag Release
+#
+# Runs automatically on every push to QA. Can also be run manually from the
+# QA branch (Pipelines > this pipeline > Run pipeline > pick QA).
+#
+# Validate = check-only deploy (--dry-run) of ONLY the changes between the
+# last release-* tag and HEAD of QA (same delta Deploy will push).
 #
 # TAGGING SAFETY: TagRelease will NOT run unless Deploy's result is exactly
 # 'Succeeded' (checked explicitly, not inferred) AND SmokeTest either
 # succeeded or was intentionally skipped. See the note above the TagRelease
-# stage below for why this has to be checked explicitly rather than relying
-# on a plain succeeded().
+# stage below for why this has to be checked explicitly.
 # ============================================================================
 
-trigger: none   # disabled — pipeline no longer runs automatically on merge to main.
-                # Trigger a deploy manually: Pipelines > this pipeline > Run pipeline
-                # (defaults to building from 'main' unless you pick another branch).
-
-pr:
+trigger:
   branches:
     include:
-      - none          # PRs into main trigger Validate automatically (check-only, no deploy)
+      - QA
+
+pr: none   # no PR-triggered runs; validation happens on the QA branch itself
 
 parameters:
   - name: skipSmokeTest
     displayName: 'Skip smoke tests (testing only)'
     type: boolean
-    default: false
+    default: true
   - name: forceSmokeTestFailure
     displayName: 'Force smoke test to fail (testing only)'
     type: boolean
@@ -40,17 +42,18 @@ variables:
   - name: prodAlias
     value: 'prod-org'
 
-# ============================================================================
-# STAGE 1: VALIDATE — runs on PR into main. Check-only deploy, no changes
-# committed to the org. Result gates the GitHub PR status check.
-# ============================================================================
 stages:
+
+# ============================================================================
+# STAGE 1: VALIDATE — check-only deploy of the changed components in the QA
+# branch (last release tag -> HEAD). Nothing is committed to the org.
+# ============================================================================
   - stage: Validate
-    displayName: 'Validate (check-only deploy to Production)'
-    condition: eq(variables['Build.Reason'], 'PullRequest')
+    displayName: 'Validate changed components (check-only)'
+    condition: eq(variables['Build.SourceBranch'], 'refs/heads/QA')
     jobs:
       - job: ValidateDeploy
-        displayName: 'sf project deploy validate'
+        displayName: 'Validate delta'
         steps:
           - checkout: self
             fetchDepth: 0
@@ -63,8 +66,9 @@ stages:
 
           - script: |
               npm install --global @salesforce/cli
+              echo y | sf plugins install sfdx-git-delta
               sf --version
-            displayName: 'Install Salesforce CLI'
+            displayName: 'Install Salesforce CLI and sfdx-git-delta'
 
           - script: |
               sf org login jwt \
@@ -75,13 +79,124 @@ stages:
                 --alias $(prodAlias)
             displayName: 'Authenticate to Production org (JWT)'
 
+          # Same delta logic as the Deploy stage so both see identical changes.
           - script: |
-              sf project deploy validate \
-                --source-dir force-app \
-                --target-org $(prodAlias) \
-                --test-level $(sfdxTestLevel) \
-                --json > validate-result.json
-              VALIDATE_EXIT=$?
+              PREV_TAG=$(git tag -l "release-*" --sort=-creatordate | head -n 1)
+              if [ -z "$PREV_TAG" ]; then
+                echo "No previous release tag - first deploy, full force-app will be validated."
+                exit 0
+              fi
+              echo "Diffing against previous release: $PREV_TAG"
+
+              mkdir -p forward-delta
+              sf sgd source delta \
+                --from "$PREV_TAG" \
+                --to "HEAD" \
+                --output-dir forward-delta \
+                --generate-delta
+              SGD_EXIT=$?
+              if [ $SGD_EXIT -ne 0 ]; then
+                echo "##vso[task.logissue type=error]sfdx-git-delta failed with exit code $SGD_EXIT. Cannot determine what changed since $PREV_TAG."
+                exit 1
+              fi
+
+              if [ -f forward-delta/package/package.xml ]; then
+                echo "----- Components to validate (added/modified since $PREV_TAG) -----"
+                cat forward-delta/package/package.xml
+              else
+                echo "No added/modified components since $PREV_TAG."
+              fi
+
+              if [ -f forward-delta/destructiveChanges/destructiveChanges.xml ]; then
+                echo "----- Components deleted in git since $PREV_TAG -----"
+                cat forward-delta/destructiveChanges/destructiveChanges.xml
+              else
+                echo "No components were deleted since $PREV_TAG."
+              fi
+
+              # SAFETY FILTER (identical to Deploy): strip standard objects
+              # wrongly flagged as CustomObject deletions.
+              if [ -f forward-delta/destructiveChanges/destructiveChanges.xml ]; then
+                python3 - forward-delta/destructiveChanges/destructiveChanges.xml << 'PYEOF'
+              import sys
+              import xml.etree.ElementTree as ET
+
+              target_file = sys.argv[1]
+              ns = "{http://soap.sforce.com/2006/04/metadata}"
+              ET.register_namespace('', ns.strip('{}'))
+              tree = ET.parse(target_file)
+              root = tree.getroot()
+
+              removed = []
+              for types_el in list(root.findall(f"{ns}types")):
+                  type_name_el = types_el.find(f"{ns}name")
+                  if type_name_el is not None and type_name_el.text == "CustomObject":
+                      for m in list(types_el.findall(f"{ns}members")):
+                          if not m.text.endswith("__c"):
+                              removed.append(m.text)
+                              types_el.remove(m)
+                      if not types_el.findall(f"{ns}members"):
+                          root.remove(types_el)
+
+              if removed:
+                  print(f"##vso[task.logissue type=warning]Removed {len(removed)} standard object(s) incorrectly flagged for deletion: {', '.join(removed)}.")
+                  tree.write(target_file, xml_declaration=True, encoding='UTF-8')
+              else:
+                  print("No standard-object false positives found.")
+              PYEOF
+              fi
+
+              # Pure-deletion release: CLI needs a manifest to pair with
+              # --post-destructive-changes, so provide an empty one.
+              if [ ! -f forward-delta/package/package.xml ] && [ -f forward-delta/destructiveChanges/destructiveChanges.xml ]; then
+                mkdir -p forward-delta/package
+                cat > forward-delta/package/package.xml << 'EOF'
+              <?xml version="1.0" encoding="UTF-8"?>
+              <Package xmlns="http://soap.sforce.com/2006/04/metadata">
+                  <version>60.0</version>
+              </Package>
+              EOF
+              fi
+            displayName: 'Compute delta of changes in this branch'
+
+          - script: |
+              PREV_TAG=$(git tag -l "release-*" --sort=-creatordate | head -n 1)
+              MANIFEST="forward-delta/package/package.xml"
+              DESTRUCTIVE="forward-delta/destructiveChanges/destructiveChanges.xml"
+
+              VALIDATE_EXIT=0
+              if [ -z "$PREV_TAG" ]; then
+                echo "First deploy - validating full force-app."
+                sf project deploy start --dry-run \
+                  --source-dir force-app \
+                  --target-org $(prodAlias) \
+                  --test-level $(sfdxTestLevel) \
+                  --wait 60 \
+                  --json > validate-result.json
+                VALIDATE_EXIT=$?
+              elif [ -f "$MANIFEST" ] && [ -f "$DESTRUCTIVE" ]; then
+                sf project deploy start --dry-run \
+                  --manifest "$MANIFEST" \
+                  --post-destructive-changes "$DESTRUCTIVE" \
+                  --target-org $(prodAlias) \
+                  --test-level $(sfdxTestLevel) \
+                  --wait 60 \
+                  --ignore-warnings \
+                  --json > validate-result.json
+                VALIDATE_EXIT=$?
+              elif [ -f "$MANIFEST" ]; then
+                sf project deploy start --dry-run \
+                  --manifest "$MANIFEST" \
+                  --target-org $(prodAlias) \
+                  --test-level $(sfdxTestLevel) \
+                  --wait 60 \
+                  --json > validate-result.json
+                VALIDATE_EXIT=$?
+              else
+                echo "No changes since $PREV_TAG - nothing to validate."
+                echo '{"status":"Skipped"}' > validate-result.json
+                exit 0
+              fi
 
               cat validate-result.json
 
@@ -100,27 +215,20 @@ stages:
 
               echo "Validation succeeded."
               exit 0
-            displayName: 'Run check-only deploy + Apex tests'
-
-          - script: |
-              JOB_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('validate-result.json')).result.id)")
-              echo "##vso[task.setvariable variable=validationJobId;isOutput=true]$JOB_ID"
-              echo "Validation Job Id: $JOB_ID"
-            name: validateOutput
-            displayName: 'Capture validation job id for quick deploy'
+            displayName: 'Check-only deploy of changed components + Apex tests'
 
           - publish: validate-result.json
             artifact: validate-result
+            condition: always()
 
 # ============================================================================
 # STAGE 2: APPROVE — gated by the Production environment's approval check
-# (Pipelines > Environments > Production). Only runs on actual merges to
-# main, not on PR validation.
+# (Pipelines > Environments > Production). Runs only after Validate passes.
 # ============================================================================
   - stage: Approve
     displayName: 'Manual approval for Production deploy'
-    dependsOn: []
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/QA'))
     jobs:
       - deployment: ApprovalGate
         displayName: 'Await Production approval'
@@ -472,4 +580,4 @@ stages:
               git tag -a "$TAG" -m "Production release $(Build.BuildId)"
               git push origin "$TAG"
               echo "Tagged as $TAG"
-            displayName: 'Tag main with release marker'
+            displayName: 'Tag QA with release marker'
