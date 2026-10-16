@@ -10,7 +10,10 @@
 # on a plain succeeded().
 # ============================================================================
 
-trigger: none   # disabled — pipeline no longer runs automatically on merge to main.
+trigger:
+ branches:
+    include:
+      - QA   # disabled — pipeline no longer runs automatically on merge to main.
                 # Trigger a deploy manually: Pipelines > this pipeline > Run pipeline
                 # (defaults to building from 'main' unless you pick another branch).
 
@@ -23,7 +26,7 @@ parameters:
   - name: skipSmokeTest
     displayName: 'Skip smoke tests (testing only)'
     type: boolean
-    default: false
+    default: true
   - name: forceSmokeTestFailure
     displayName: 'Force smoke test to fail (testing only)'
     type: boolean
@@ -120,7 +123,7 @@ stages:
   - stage: Approve
     displayName: 'Manual approval for Production deploy'
     dependsOn: []
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/QA'), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - deployment: ApprovalGate
         displayName: 'Await Production approval'
