@@ -7,16 +7,16 @@ public with sharing class ContactTriggerHandler {
         }
     }
 
-    private static void setSalesTitle(List<Contact> contacts) {
+    // private static void setSalesTitle(List<Contact> contacts) {
 
-        for (Contact con : contacts) {
+    //     for (Contact con : contacts) {
 
-            if (
-                con.Department == 'Sales' &&
-                String.isBlank(con.Title)
-            ) {
-                con.Title = 'Sales Representative';
-            }
-        }
-    }
+    //         if (
+    //             con.Department == 'Sales' &&
+    //             String.isBlank(con.Title)
+    //         ) {
+    //             con.Title = 'Sales Representative';
+    //         }
+    //     }
+    // }
 }
