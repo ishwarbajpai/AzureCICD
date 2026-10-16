@@ -9,6 +9,25 @@
 # (not after a trailing `cat`, which would mask it) and cross-checks the
 # JSON result's own status field as a second safeguard, explicitly exiting
 # 1 on any failure so this propagates correctly.
+#
+# NOTHING-TO-DEPLOY HANDLING: The sf CLI returns exit code 1 with the error
+# code "NothingToDeploy" when a manifest has no changes to deploy. For a
+# rollback this is a legitimate outcome (e.g. the delta only contained
+# deletions, or Production already matches the target), so deploy/delete
+# steps treat it as SUCCESS. Any other non-zero exit or any status other
+# than "Succeeded" is still treated as a failure.
+#
+# STATUS PARSING: On success the real deploy status lives at result.status
+# (a string such as "Succeeded"). The top-level `status` field is a numeric
+# exit status (0/1), so it is only used as a last-resort fallback.
+#
+# QA-BRANCH REVERT: by default, after a rollback `QA` still contains the
+# bad commits (Production and `QA` diverge on purpose, since rewriting
+# history on a shared branch is risky). Set revertQABranch=true to have
+# the pipeline automatically create a normal (non-history-rewriting) commit
+# on `QA` that makes force-app/ match the rollback target exactly, then
+# push it. This is opt-in because it's a bigger decision than rolling back
+# Production and a team may prefer to fix forward via PR instead.
 # ============================================================================
 
 trigger: none
@@ -34,6 +53,13 @@ parameters:
     displayName: 'Type CONFIRM to proceed with rollback'
     type: string
     default: ''
+  - name: revertQABranch
+    displayName: 'Also revert QA branch to match the rollback target? (creates a normal commit, does NOT force-push or rewrite history)'
+    type: string
+    default: 'false'
+    values:
+      - 'true'
+      - 'false'
 
 variables:
   - group: sf-prod-secrets   # SF_PROD_CONSUMER_KEY, SF_PROD_USERNAME, SF_PROD_LOGIN_URL
@@ -166,12 +192,18 @@ stages:
               VALIDATE_STATUS=$(node -e "
                 try {
                   const r = JSON.parse(require('fs').readFileSync('rollback-validate-result.json'));
-                  console.log(r.status || (r.result && r.result.status) || 'Unknown');
+                  if (r.name === 'NothingToDeploy' || r.code === 'NothingToDeploy') { console.log('NothingToDeploy'); }
+                  else { console.log((r.result && r.result.status) || r.status || 'Unknown'); }
                 } catch (e) { console.log('PARSE_ERROR'); }
               ")
               echo "sf CLI exit code: $VALIDATE_EXIT | reported status: $VALIDATE_STATUS"
 
-              if [ "$VALIDATE_EXIT" -ne 0 ] || [ "$VALIDATE_STATUS" == "Failed" ] || [ "$VALIDATE_STATUS" == "PARSE_ERROR" ]; then
+              if [ "$VALIDATE_STATUS" == "NothingToDeploy" ]; then
+                echo "Nothing to validate — treating as success."
+                exit 0
+              fi
+
+              if [ "$VALIDATE_EXIT" -ne 0 ] || [ "$VALIDATE_STATUS" != "Succeeded" ]; then
                 echo "##vso[task.logissue type=error]Rollback validation FAILED (exit code $VALIDATE_EXIT, status $VALIDATE_STATUS). Stopping here — approval and deploy will not proceed."
                 exit 1
               fi
@@ -273,7 +305,8 @@ stages:
           # SAFETY FILTER: strip any standard object (Opportunity, Lead,
           # Account, etc.) that sgd may have incorrectly flagged as a
           # CustomObject to delete — standard objects can never be deleted.
-          # See main pipeline for the full explanation of why this happens.
+          # If this leaves destructiveChanges.xml with no members at all,
+          # the file is removed so the delete step is skipped cleanly.
           - script: |
               DESTRUCTIVE="rollback-delta/destructiveChanges/destructiveChanges.xml"
               if [ ! -f "$DESTRUCTIVE" ]; then
@@ -309,7 +342,12 @@ stages:
                   print("No standard-object false positives found.")
               PYEOF
 
-              if [ -f "$DESTRUCTIVE" ]; then
+              # If nothing is left to delete after filtering, drop the file
+              # so the delete step is skipped instead of hitting NothingToDeploy.
+              if ! grep -q "<members>" "$DESTRUCTIVE"; then
+                echo "destructiveChanges.xml has no members after filtering — removing it."
+                rm -f "$DESTRUCTIVE"
+              else
                 mkdir -p rollback-delta
                 cat > rollback-delta/emptyPackage.xml << 'EOF'
               <?xml version="1.0" encoding="UTF-8"?>
@@ -317,10 +355,9 @@ stages:
                   <version>60.0</version>
               </Package>
               EOF
+                echo "----- destructiveChanges.xml after filtering -----"
+                cat "$DESTRUCTIVE"
               fi
-
-              echo "----- destructiveChanges.xml after filtering -----"
-              cat "$DESTRUCTIVE"
             displayName: 'Filter out standard objects incorrectly flagged for deletion'
 
           - script: |
@@ -362,12 +399,18 @@ stages:
                 DEPLOY_STATUS=$(node -e "
                   try {
                     const r = JSON.parse(require('fs').readFileSync('destructive-deploy-result.json'));
-                    console.log(r.status || (r.result && r.result.status) || 'Unknown');
+                    if (r.name === 'NothingToDeploy' || r.code === 'NothingToDeploy') { console.log('NothingToDeploy'); }
+                    else { console.log((r.result && r.result.status) || r.status || 'Unknown'); }
                   } catch (e) { console.log('PARSE_ERROR'); }
                 ")
                 echo "sf CLI exit code: $DEPLOY_EXIT | reported status: $DEPLOY_STATUS"
 
-                if [ "$DEPLOY_EXIT" -ne 0 ] || [ "$DEPLOY_STATUS" == "Failed" ] || [ "$DEPLOY_STATUS" == "PARSE_ERROR" ]; then
+                if [ "$DEPLOY_STATUS" == "NothingToDeploy" ]; then
+                  echo "Nothing to delete — Production already lacks these components. Treating as success."
+                  exit 0
+                fi
+
+                if [ "$DEPLOY_EXIT" -ne 0 ] || [ "$DEPLOY_STATUS" != "Succeeded" ]; then
                   echo "##vso[task.logissue type=error]Component deletion FAILED (exit code $DEPLOY_EXIT, status $DEPLOY_STATUS). Check the output above for dependency conflicts or data-loss warnings (e.g. a field still referenced elsewhere). Stopping here — the metadata restore will NOT run, and no rollback tag will be created."
                   exit 1
                 fi
@@ -378,33 +421,47 @@ stages:
             displayName: 'Delete components added by the bad release (auto-detected)'
 
           - script: |
-              if [ -f rollback-delta/package/package.xml ]; then
-                sf project deploy start \
-                  --manifest rollback-delta/package/package.xml \
-                  --target-org $(prodAlias) \
-                  --test-level ${{ parameters.testLevel }} \
-                  --wait 60 \
-                  --json > rollback-deploy-result.json
-                DEPLOY_EXIT=$?
+              PACKAGE="rollback-delta/package/package.xml"
 
-                cat rollback-deploy-result.json
-
-                DEPLOY_STATUS=$(node -e "
-                  try {
-                    const r = JSON.parse(require('fs').readFileSync('rollback-deploy-result.json'));
-                    console.log(r.status || (r.result && r.result.status) || 'Unknown');
-                  } catch (e) { console.log('PARSE_ERROR'); }
-                ")
-                echo "sf CLI exit code: $DEPLOY_EXIT | reported status: $DEPLOY_STATUS"
-
-                if [ "$DEPLOY_EXIT" -ne 0 ] || [ "$DEPLOY_STATUS" == "Failed" ] || [ "$DEPLOY_STATUS" == "PARSE_ERROR" ]; then
-                  echo "##vso[task.logissue type=error]Rollback metadata deploy FAILED (exit code $DEPLOY_EXIT, status $DEPLOY_STATUS). Check the output above. Stopping here — no rollback tag will be created."
-                  exit 1
-                fi
-                echo "Rollback metadata deploy succeeded."
-              else
+              if [ ! -f "$PACKAGE" ]; then
                 echo "Nothing to redeploy — target state matched the bad state except for deleted components (handled above, if any)."
+                exit 0
               fi
+
+              if ! grep -q "<members>" "$PACKAGE"; then
+                echo "package.xml has no members — nothing to redeploy. Skipping deploy."
+                exit 0
+              fi
+
+              sf project deploy start \
+                --manifest "$PACKAGE" \
+                --target-org $(prodAlias) \
+                --test-level ${{ parameters.testLevel }} \
+                --wait 60 \
+                --json > rollback-deploy-result.json
+              DEPLOY_EXIT=$?
+
+              cat rollback-deploy-result.json
+
+              DEPLOY_STATUS=$(node -e "
+                try {
+                  const r = JSON.parse(require('fs').readFileSync('rollback-deploy-result.json'));
+                  if (r.name === 'NothingToDeploy' || r.code === 'NothingToDeploy') { console.log('NothingToDeploy'); }
+                  else { console.log((r.result && r.result.status) || r.status || 'Unknown'); }
+                } catch (e) { console.log('PARSE_ERROR'); }
+              ")
+              echo "sf CLI exit code: $DEPLOY_EXIT | reported status: $DEPLOY_STATUS"
+
+              if [ "$DEPLOY_STATUS" == "NothingToDeploy" ]; then
+                echo "Nothing to redeploy — Production already matches the target state for these components. Treating as success."
+                exit 0
+              fi
+
+              if [ "$DEPLOY_EXIT" -ne 0 ] || [ "$DEPLOY_STATUS" != "Succeeded" ]; then
+                echo "##vso[task.logissue type=error]Rollback metadata deploy FAILED (exit code $DEPLOY_EXIT, status $DEPLOY_STATUS). Check the output above. Stopping here — no rollback tag will be created."
+                exit 1
+              fi
+              echo "Rollback metadata deploy succeeded."
             displayName: 'Deploy only the changed components to Production'
 
           - publish: rollback-delta
@@ -413,7 +470,7 @@ stages:
 # ============================================================================
 # STAGE 6: POST-ROLLBACK TAG — mark this rollback in git history. Only
 # reachable if DeployRollback's result is exactly 'Succeeded', since every
-# step above now explicitly exits 1 on any real failure.
+# step above explicitly exits 1 on any real failure.
 # ============================================================================
   - stage: TagRollbackEvent
     displayName: 'Tag rollback event'
@@ -481,5 +538,81 @@ stages:
             displayName: 'Tag rollback event on QA'
 
           - script: |
-              echo "##vso[task.logissue type=warning]Production was rolled back to $(resolvedTag). QA branch still has the reverted changes committed — remember to open a follow-up PR to fix forward or revert the offending commits on QA so the branch matches Production."
+              if [ "${{ parameters.revertQABranch }}" == "true" ]; then
+                echo "revertQABranch=true — the next stage will revert QA automatically; no manual action needed."
+              else
+                echo "##vso[task.logissue type=warning]Production was rolled back to $(resolvedTag). QA branch still has the reverted changes committed — remember to open a follow-up PR to fix forward or revert the offending commits on QA so the branch matches Production. (Re-run this pipeline with revertQABranch=true to do this automatically next time.)"
+              fi
             displayName: 'Reminder: reconcile QA with Production state'
+
+# ============================================================================
+# STAGE 7 (OPTIONAL): REVERT QA BRANCH — only runs if revertQABranch was
+# set to 'true'. Makes force-app/ on QA match the resolved rollback tag
+# EXACTLY (including deleting files that QA has but the tag doesn't),
+# then pushes a normal commit. This does NOT force-push or rewrite history —
+# it's equivalent to a human doing `git checkout <tag> -- force-app`, minus
+# any leftover files the tag never had, plus a commit and push.
+# ============================================================================
+  - stage: RevertQABranch
+    displayName: 'Revert QA branch to rollback target (optional)'
+    dependsOn:
+      - ResolveTag
+      - TagRollbackEvent
+    condition: and(succeeded(), eq('${{ parameters.revertQABranch }}', 'true'))
+    variables:
+      resolvedTag: $[ stageDependencies.ResolveTag.ResolveTargetTag.outputs['resolve.resolvedTag'] ]
+    jobs:
+      - job: RevertQAToTarget
+        displayName: 'Make QA match rollback target'
+        steps:
+          - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
+
+          - script: |
+              git config user.email "azuredevops@pipeline"
+              git config user.name "Azure Pipeline"
+              git checkout QA
+              git pull origin QA
+            displayName: 'Checkout latest QA'
+
+          # Diff file lists rather than blindly overlaying the tag onto QA:
+          # a plain `git checkout <tag> -- force-app` only adds/overwrites
+          # files present in the tag — it would silently leave behind any
+          # file that QA has but the target tag doesn't (e.g. a class
+          # added by the bad release). Deleting the difference first makes
+          # the result byte-for-byte equal to the target tag's force-app/.
+          - script: |
+              git ls-tree -r --name-only $(resolvedTag) -- force-app | sort > /tmp/tag-files.txt
+              git ls-tree -r --name-only HEAD -- force-app | sort > /tmp/head-files.txt
+
+              comm -23 /tmp/head-files.txt /tmp/tag-files.txt > /tmp/to-delete.txt
+
+              if [ -s /tmp/to-delete.txt ]; then
+                echo "----- Files on QA not present in $(resolvedTag), will be removed -----"
+                cat /tmp/to-delete.txt
+                xargs -a /tmp/to-delete.txt -r git rm -q --
+              else
+                echo "No extra files on QA to remove."
+              fi
+
+              echo "----- Restoring force-app/ from $(resolvedTag) -----"
+              git checkout $(resolvedTag) -- force-app
+            displayName: 'Make force-app/ on QA match resolved tag exactly'
+
+          - script: |
+              git config user.email "azuredevops@pipeline"
+              git config user.name "Azure Pipeline"
+              if git diff --cached --quiet && git diff --quiet -- force-app; then
+                echo "QA already matches $(resolvedTag) — nothing to commit."
+                exit 0
+              fi
+              git add force-app
+              git commit -m "Revert QA to match rollback target $(resolvedTag) (Build $(Build.BuildId))"
+              git push origin QA
+              echo "QA reverted to match $(resolvedTag) and pushed."
+            displayName: 'Commit and push QA revert'
+
+          - script: |
+              echo "##vso[task.logissue type=warning]QA branch was automatically reverted to match $(resolvedTag). If the offending release's changes are still wanted eventually, they'll need to be reapplied via a fresh PR rather than assumed to still be on QA."
+            displayName: 'Note: QA was auto-reverted, not just tagged'
