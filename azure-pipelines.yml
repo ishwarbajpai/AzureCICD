@@ -77,7 +77,7 @@ stages:
                 --username "$(SF_PROD_USERNAME)" \
                 --instance-url "$(SF_PROD_LOGIN_URL)" \
                 --alias $(prodAlias)
-            displayName: 'Authenticate to Production org (JWT)'
+            displayName: 'Authenticate to QA org (JWT)'
 
           # Same delta logic as the Deploy stage so both see identical changes.
           - script: |
@@ -226,18 +226,18 @@ stages:
 # (Pipelines > Environments > Production). Runs only after Validate passes.
 # ============================================================================
   - stage: Approve
-    displayName: 'Manual approval for Production deploy'
+    displayName: 'Manual approval for QA deploy'
     dependsOn: Validate
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/QA'))
     jobs:
       - deployment: ApprovalGate
-        displayName: 'Await Production approval'
-        environment: 'Production'
+        displayName: 'Await QA approval'
+        environment: 'QA'
         strategy:
           runOnce:
             deploy:
               steps:
-                - script: echo "Approved for production deploy"
+                - script: echo "Approved for QA deploy"
                   displayName: 'Approval confirmed'
 
 # ============================================================================
@@ -245,7 +245,7 @@ stages:
 # components, not the whole force-app directory), including any deletions.
 # ============================================================================
   - stage: Deploy
-    displayName: 'Deploy to Production'
+    displayName: 'Deploy to QA'
     dependsOn: Approve
     condition: succeeded()
     jobs:
@@ -274,7 +274,7 @@ stages:
                 --username "$(SF_PROD_USERNAME)" \
                 --instance-url "$(SF_PROD_LOGIN_URL)" \
                 --alias $(prodAlias)
-            displayName: 'Authenticate to Production org (JWT)'
+            displayName: 'Authenticate to QA org (JWT)'
 
           # DELTA + DESTRUCTIVE CHANGES: a normal source deploy is
           # additive-only — deleting a field/class/etc. from git does NOT
@@ -492,7 +492,7 @@ stages:
 
               echo "Deploy succeeded."
               exit 0
-            displayName: 'Deploy only changed components to Production (full deploy on first release)'
+            displayName: 'Deploy only changed components to QA (full deploy on first release)'
 
           - publish: deploy-result.json
             artifact: deploy-result
@@ -528,7 +528,7 @@ stages:
                 --username "$(SF_PROD_USERNAME)" \
                 --instance-url "$(SF_PROD_LOGIN_URL)" \
                 --alias $(prodAlias)
-            displayName: 'Authenticate to Production org (JWT)'
+            displayName: 'Authenticate to QA org (JWT)'
 
           - script: |
               if [ "${{ parameters.forceSmokeTestFailure }}" == "True" ]; then
@@ -577,7 +577,7 @@ stages:
               TAG="release-$(date +%Y-%m-%d)-$(Build.BuildId)"
               git config user.email "azuredevops@pipeline"
               git config user.name "Azure Pipeline"
-              git tag -a "$TAG" -m "Production release $(Build.BuildId)"
+              git tag -a "$TAG" -m "QA release $(Build.BuildId)"
               git push origin "$TAG"
               echo "Tagged as $TAG"
             displayName: 'Tag QA with release marker'
