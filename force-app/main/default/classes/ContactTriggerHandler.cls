@@ -14,5 +14,5 @@ public with sharing class ContactTriggerHandler {
                 con.Title = 'Sales Representative';
             }
         }
-    } */
+}} */
 }
