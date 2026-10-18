@@ -1,126 +1,121 @@
 @IsTest
 private class ContactTriggerHandlerTest {
+/*
+    @IsTest
+        static void testSalesContactGetsTitle() {
+            Contact con = new Contact(
+               LastName = 'Sales Contact',
+               Department = 'Sales'
+               );
 
-    // @IsTest
-    // static void testSalesContactGetsTitle() {
+            Test.startTest();
+                insert con;
+            Test.stopTest();
 
-    //     Contact con = new Contact(
-    //         LastName = 'Sales Contact',
-    //         Department = 'Sales'
-    //     );
+            Contact result = [SELECT Id, Department, Title FROM Contact WHERE Id = :con.Id];
 
-    //     Test.startTest();
-    //     insert con;
-    //     Test.stopTest();
+        System.assertEquals(
+            'Sales',
+            result.Department,
+            'Department should be Sales.'
+        );
 
-    //     Contact result = [
-    //         SELECT Id, Department, Title
-    //         FROM Contact
-    //         WHERE Id = :con.Id
-    //     ];
+        System.assertEquals(
+            'Sales Representative',
+            result.Title,
+            'Sales Contact should receive the default Sales Representative title.'
+        );
+    }
 
-    //     System.assertEquals(
-    //         'Sales',
-    //         result.Department,
-    //         'Department should be Sales.'
-    //     );
+    @IsTest
+    static void testNonSalesContact() {
 
-    //     System.assertEquals(
-    //         'Sales Representative',
-    //         result.Title,
-    //         'Sales Contact should receive the default Sales Representative title.'
-    //     );
-    // }
+        Contact con = new Contact(
+            LastName = 'Marketing Contact',
+            Department = 'Marketing'
+        );
 
-    // @IsTest
-    // static void testNonSalesContact() {
+        Test.startTest();
+        insert con;
+        Test.stopTest();
 
-    //     Contact con = new Contact(
-    //         LastName = 'Marketing Contact',
-    //         Department = 'Marketing'
-    //     );
+        Contact result = [
+            SELECT Id, Department, Title
+            FROM Contact
+            WHERE Id = :con.Id
+        ];
 
-    //     Test.startTest();
-    //     insert con;
-    //     Test.stopTest();
+        System.assertEquals(
+            'Marketing',
+            result.Department,
+            'Department should be Marketing.'
+        );
 
-    //     Contact result = [
-    //         SELECT Id, Department, Title
-    //         FROM Contact
-    //         WHERE Id = :con.Id
-    //     ];
+        System.assertEquals(
+            null,
+            result.Title,
+            'Title should remain blank for non-Sales Contacts.'
+        );
+    }
 
-    //     System.assertEquals(
-    //         'Marketing',
-    //         result.Department,
-    //         'Department should be Marketing.'
-    //     );
+    @IsTest
+    static void testExistingTitleIsNotOverwritten() {
 
-    //     System.assertEquals(
-    //         null,
-    //         result.Title,
-    //         'Title should remain blank for non-Sales Contacts.'
-    //     );
-    // }
+        Contact con = new Contact(
+            LastName = 'Sales Manager',
+            Department = 'Sales',
+            Title = 'Sales Manager'
+        );
 
-    // @IsTest
-    // static void testExistingTitleIsNotOverwritten() {
+        Test.startTest();
+        insert con;
+        Test.stopTest();
 
-    //     Contact con = new Contact(
-    //         LastName = 'Sales Manager',
-    //         Department = 'Sales',
-    //         Title = 'Sales Manager'
-    //     );
+        Contact result = [
+            SELECT Id, Department, Title
+            FROM Contact
+            WHERE Id = :con.Id
+        ];
 
-    //     Test.startTest();
-    //     insert con;
-    //     Test.stopTest();
+        System.assertEquals(
+            'Sales Manager',
+            result.Title,
+            'Existing Title should not be overwritten.'
+        );
+    }
 
-    //     Contact result = [
-    //         SELECT Id, Department, Title
-    //         FROM Contact
-    //         WHERE Id = :con.Id
-    //     ];
+    @IsTest
+    static void testUpdateDepartmentToSales() {
 
-    //     System.assertEquals(
-    //         'Sales Manager',
-    //         result.Title,
-    //         'Existing Title should not be overwritten.'
-    //     );
-    // }
+        Contact con = new Contact(
+            LastName = 'Update Contact',
+            Department = 'Marketing'
+        );
 
-    // @IsTest
-    // static void testUpdateDepartmentToSales() {
+        insert con;
 
-    //     Contact con = new Contact(
-    //         LastName = 'Update Contact',
-    //         Department = 'Marketing'
-    //     );
+        con.Department = 'Sales';
 
-    //     insert con;
+        Test.startTest();
+        update con;
+        Test.stopTest();
 
-    //     con.Department = 'Sales';
+        Contact result = [
+            SELECT Id, Department, Title
+            FROM Contact
+            WHERE Id = :con.Id
+        ];
 
-    //     Test.startTest();
-    //     update con;
-    //     Test.stopTest();
+        System.assertEquals(
+            'Sales',
+            result.Department,
+            'Department should be updated to Sales.'
+        );
 
-    //     Contact result = [
-    //         SELECT Id, Department, Title
-    //         FROM Contact
-    //         WHERE Id = :con.Id
-    //     ];
-
-    //     System.assertEquals(
-    //         'Sales',
-    //         result.Department,
-    //         'Department should be updated to Sales.'
-    //     );
-
-    //     System.assertEquals(
-    //         'Sales Representative',
-    //         result.Title,
-    //         'Title should be populated when Department changes to Sales.'
-    //     );
-    // }
+        System.assertEquals(
+            'Sales Representative',
+            result.Title,
+            'Title should be populated when Department changes to Sales.'
+        );
+    }*/
 }

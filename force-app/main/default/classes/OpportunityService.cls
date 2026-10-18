@@ -19,7 +19,7 @@ public with sharing class OpportunityService {
                 errors.add(opp.Name + ': Close Date cannot be in the past for an open opportunity.');
             }
         }
-        System.debug('opps : ' + opps);
+       // System.debug('opps : ' + opps);
         return errors;
     }
 
