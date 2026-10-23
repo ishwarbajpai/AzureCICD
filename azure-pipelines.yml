@@ -19,6 +19,15 @@ trigger:
     include:
       - QA
 
+  paths:
+    exclude:
+      - azure-pipelines.yml
+      - azure-pipelines-1.yml
+      - azure-pipelines-2.yml
+      - azure-pipelines-rollback.yml
+      - rollback/history/*
+      - README.md
+
 pr: none   # no PR-triggered runs; validation happens on the QA branch itself
 
 parameters:
