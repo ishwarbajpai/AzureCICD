@@ -516,6 +516,18 @@ stages:
               ls -la "$HISTORY_DIR"
             displayName: 'Prepare rollback history record'
 
+        # - script: |
+        #    git config user.email "azuredevops@pipeline"
+        #      git config user.name "Azure Pipeline"
+        #      ROLLBACK_TAG=$(cat /tmp/rollback-tag.txt)
+        #      git checkout QA
+        #      git pull origin QA
+        #      git add "rollback/history/${ROLLBACK_TAG}"
+        #      git commit -m "Rollback audit record: ${ROLLBACK_TAG}" || echo "Nothing to commit (no delta files generated)"
+        #      git push origin QA
+        #      echo "Committed rollback history for ${ROLLBACK_TAG}"
+        #    displayName: 'Commit rollback history to QA'
+
           - script: |
               git config user.email "azuredevops@pipeline"
               git config user.name "Azure Pipeline"
@@ -523,7 +535,7 @@ stages:
               git checkout QA
               git pull origin QA
               git add "rollback/history/${ROLLBACK_TAG}"
-              git commit -m "Rollback audit record: ${ROLLBACK_TAG}" || echo "Nothing to commit (no delta files generated)"
+              git commit -m "Rollback audit record: ${ROLLBACK_TAG} [skip ci]" || echo "Nothing to commit (no delta files generated)"
               git push origin QA
               echo "Committed rollback history for ${ROLLBACK_TAG}"
             displayName: 'Commit rollback history to QA'
@@ -608,10 +620,23 @@ stages:
                 exit 0
               fi
               git add force-app
-              git commit -m "Revert QA to match rollback target $(resolvedTag) (Build $(Build.BuildId))"
+              git commit -m "Revert QA to match rollback target $(resolvedTag) (Build $(Build.BuildId)) [skip ci]"
               git push origin QA
               echo "QA reverted to match $(resolvedTag) and pushed."
             displayName: 'Commit and push QA revert'
+      
+      #    - script: |
+      #        git config user.email "azuredevops@pipeline"
+      #        git config user.name "Azure Pipeline"
+      #        if git diff --cached --quiet && git diff --quiet -- force-app; then
+      #          echo "QA already matches $(resolvedTag) — nothing to commit."
+      #          exit 0
+      #        fi
+      #        git add force-app
+      #        git commit -m "Revert QA to match rollback target $(resolvedTag) (Build $(Build.BuildId))"
+      #        git push origin QA
+      #        echo "QA reverted to match $(resolvedTag) and pushed."
+      #      displayName: 'Commit and push QA revert'
 
           - script: |
               echo "##vso[task.logissue type=warning]QA branch was automatically reverted to match $(resolvedTag). If the offending release's changes are still wanted eventually, they'll need to be reapplied via a fresh PR rather than assumed to still be on QA."
