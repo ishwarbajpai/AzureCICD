@@ -177,7 +177,7 @@ stages:
                 --username "$(SF_PROD_USERNAME)" \
                 --instance-url "$(SF_PROD_LOGIN_URL)" \
                 --alias $(prodAlias)
-            displayName: 'Authenticate to Production org (JWT)'
+            displayName: 'Authenticate to QA org (JWT)'
 
           - script: |
               sf project deploy validate \
@@ -216,7 +216,7 @@ stages:
             artifact: rollback-validate-result
 
 # ============================================================================
-# STAGE 4: APPROVE — manual approval gate on the Production environment.
+# STAGE 4: APPROVE — manual approval gate on the QA environment.
 # ============================================================================
   - stage: ApproveRollback
     displayName: 'Manual approval for rollback'
@@ -228,8 +228,8 @@ stages:
       resolvedTag: $[ stageDependencies.ResolveTag.ResolveTargetTag.outputs['resolve.resolvedTag'] ]
     jobs:
       - deployment: ApprovalGate
-        displayName: 'Await Production rollback approval'
-        environment: 'Production'
+        displayName: 'Await QA rollback approval'
+        environment: 'QA'
         strategy:
           runOnce:
             deploy:
@@ -245,7 +245,7 @@ stages:
 # components the bad release added, that don't exist in the target tag.
 # ============================================================================
   - stage: DeployRollback
-    displayName: 'Deploy rollback to Production'
+    displayName: 'Deploy rollback to QA'
     dependsOn:
       - ResolveTag
       - ApproveRollback
@@ -378,7 +378,7 @@ stages:
                 --username "$(SF_PROD_USERNAME)" \
                 --instance-url "$(SF_PROD_LOGIN_URL)" \
                 --alias $(prodAlias)
-            displayName: 'Authenticate to Production org (JWT)'
+            displayName: 'Authenticate to QA org (JWT)'
 
           - script: |
               DESTRUCTIVE="rollback-delta/destructiveChanges/destructiveChanges.xml"
@@ -406,7 +406,7 @@ stages:
                 echo "sf CLI exit code: $DEPLOY_EXIT | reported status: $DEPLOY_STATUS"
 
                 if [ "$DEPLOY_STATUS" == "NothingToDeploy" ]; then
-                  echo "Nothing to delete — Production already lacks these components. Treating as success."
+                  echo "Nothing to delete — QA already lacks these components. Treating as success."
                   exit 0
                 fi
 
@@ -453,7 +453,7 @@ stages:
               echo "sf CLI exit code: $DEPLOY_EXIT | reported status: $DEPLOY_STATUS"
 
               if [ "$DEPLOY_STATUS" == "NothingToDeploy" ]; then
-                echo "Nothing to redeploy — Production already matches the target state for these components. Treating as success."
+                echo "Nothing to redeploy — QA already matches the target state for these components. Treating as success."
                 exit 0
               fi
 
@@ -462,7 +462,7 @@ stages:
                 exit 1
               fi
               echo "Rollback metadata deploy succeeded."
-            displayName: 'Deploy only the changed components to Production'
+            displayName: 'Deploy only the changed components to QA'
 
           - publish: rollback-delta
             artifact: rollback-delta-manifest
@@ -532,7 +532,7 @@ stages:
               git config user.email "azuredevops@pipeline"
               git config user.name "Azure Pipeline"
               ROLLBACK_TAG=$(cat /tmp/rollback-tag.txt)
-              git tag -a "$ROLLBACK_TAG" -m "Rolled back Production to $(resolvedTag) via Build $(Build.BuildId)"
+              git tag -a "$ROLLBACK_TAG" -m "Rolled back QA to $(resolvedTag) via Build $(Build.BuildId)"
               git push origin "$ROLLBACK_TAG"
               echo "Rollback event tagged as $ROLLBACK_TAG"
             displayName: 'Tag rollback event on QA'
@@ -541,9 +541,9 @@ stages:
               if [ "${{ parameters.revertQABranch }}" == "true" ]; then
                 echo "revertQABranch=true — the next stage will revert QA automatically; no manual action needed."
               else
-                echo "##vso[task.logissue type=warning]Production was rolled back to $(resolvedTag). QA branch still has the reverted changes committed — remember to open a follow-up PR to fix forward or revert the offending commits on QA so the branch matches Production. (Re-run this pipeline with revertQABranch=true to do this automatically next time.)"
+                echo "##vso[task.logissue type=warning]QA was rolled back to $(resolvedTag). QA branch still has the reverted changes committed — remember to open a follow-up PR to fix forward or revert the offending commits on QA so the branch matches. (Re-run this pipeline with revertQABranch=true to do this automatically next time.)"
               fi
-            displayName: 'Reminder: reconcile QA with Production state'
+            displayName: 'Reminder: reconcile QA with previous state'
 
 # ============================================================================
 # STAGE 7 (OPTIONAL): REVERT QA BRANCH — only runs if revertQABranch was
