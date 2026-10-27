@@ -71,6 +71,11 @@ variables:
 # "previous" (default) = second-newest release-* tag — skips the newest,
 # since that's normally the release you're rolling back AWAY from.
 # "latest" = newest release-* tag. Anything else = exact tag name.
+#
+# CHANGED: rollback marker tags (release-rollback-reverted-* /
+# release-rollback-notreverted-*) are EXCLUDED from "previous" and "latest",
+# so a rollback marker is never auto-selected as a rollback target. They
+# still count as the baseline for the main deploy pipeline.
 # ============================================================================
 stages:
   - stage: ResolveTag
@@ -84,16 +89,16 @@ stages:
 
           - script: |
               if [ "${{ parameters.releaseTag }}" == "previous" ]; then
-                TAG=$(git tag -l "release-*" --sort=-creatordate | sed -n '2p')
+                TAG=$(git tag -l "release-*" --sort=-creatordate | grep -v '^release-rollback-' | sed -n '2p')
                 if [ -z "$TAG" ]; then
                   echo "##vso[task.logissue type=error]Fewer than 2 release-* tags found — cannot resolve 'previous'. Use 'latest' or specify an exact tag."
                   exit 1
                 fi
-                NEWEST=$(git tag -l "release-*" --sort=-creatordate | head -n 1)
+                NEWEST=$(git tag -l "release-*" --sort=-creatordate | grep -v '^release-rollback-' | head -n 1)
                 echo "Newest tag (assumed bad, skipped): $NEWEST"
                 echo "Auto-resolved to previous release: $TAG"
               elif [ "${{ parameters.releaseTag }}" == "latest" ]; then
-                TAG=$(git tag -l "release-*" --sort=-creatordate | head -n 1)
+                TAG=$(git tag -l "release-*" --sort=-creatordate | grep -v '^release-rollback-' | head -n 1)
                 if [ -z "$TAG" ]; then
                   echo "##vso[task.logissue type=error]No release-* tags found in repo. Nothing to roll back to."
                   exit 1
@@ -471,6 +476,12 @@ stages:
 # STAGE 6: POST-ROLLBACK TAG — mark this rollback in git history. Only
 # reachable if DeployRollback's result is exactly 'Succeeded', since every
 # step above explicitly exits 1 on any real failure.
+#
+# CHANGED: the rollback tag is now a release-* tag
+#   revertQABranch=true  -> release-rollback-reverted-<date>-to-<tag>-<id>
+#   revertQABranch=false -> release-rollback-notreverted-<date>-to-<tag>-<id>
+# and it is created (annotated) on the ROLLBACK TARGET commit, so the main
+# deploy pipeline uses it as its new baseline.
 # ============================================================================
   - stage: TagRollbackEvent
     displayName: 'Tag rollback event'
@@ -492,7 +503,13 @@ stages:
             artifact: rollback-delta-manifest
 
           - script: |
-              ROLLBACK_TAG="rollback-$(date +%Y-%m-%d)-to-$(resolvedTag)-$(Build.BuildId)"
+              # CHANGED: tag name now starts with release- and records the revert choice
+              if [ "${{ parameters.revertQABranch }}" == "true" ]; then
+                KIND="reverted"
+              else
+                KIND="notreverted"
+              fi
+              ROLLBACK_TAG="release-rollback-${KIND}-$(date +%Y-%m-%d)-to-$(resolvedTag)-$(Build.BuildId)"
               echo "$ROLLBACK_TAG" > /tmp/rollback-tag.txt
 
               HISTORY_DIR="rollback/history/${ROLLBACK_TAG}"
@@ -540,13 +557,24 @@ stages:
               echo "Committed rollback history for ${ROLLBACK_TAG}"
             displayName: 'Commit rollback history to QA'
 
+          # CHANGED: tag is created on the rollback TARGET commit (what the
+          # org holds now), not on QA's HEAD. Annotated (-a) so it sorts as
+          # the newest release-* tag by creation time.
           - script: |
               git config user.email "azuredevops@pipeline"
               git config user.name "Azure Pipeline"
               ROLLBACK_TAG=$(cat /tmp/rollback-tag.txt)
-              git tag -a "$ROLLBACK_TAG" -m "Rolled back QA to $(resolvedTag) via Build $(Build.BuildId)"
+              TARGET_COMMIT=$(git rev-parse "$(resolvedTag)^{commit}")
+
+              if [ "${{ parameters.revertQABranch }}" == "true" ]; then
+                MSG="Rolled back QA to $(resolvedTag); QA branch reverted to match (Build $(Build.BuildId))"
+              else
+                MSG="Rolled back QA to $(resolvedTag); QA branch NOT reverted, still contains rolled-back commits (Build $(Build.BuildId))"
+              fi
+
+              git tag -a "$ROLLBACK_TAG" "$TARGET_COMMIT" -m "$MSG"
               git push origin "$ROLLBACK_TAG"
-              echo "Rollback event tagged as $ROLLBACK_TAG"
+              echo "Release baseline tagged as $ROLLBACK_TAG -> $TARGET_COMMIT"
             displayName: 'Tag rollback event on QA'
 
           - script: |
